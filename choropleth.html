@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<script src="https://d3js.org/d3.v4.min.js"></script>
+<style type="text/css">
+
+/* Legend Font Style */
+body {
+	font: 11px sans-serif;
+	background-color: #ffffff;
+}
+        
+/* Legend Position Style */
+.legend {
+	position:absolute;
+	left:20px;
+	top:30px;
+}
+
+.axis text {
+	font: 10px sans-serif;
+}
+
+.axis line, .axis path {
+	fill: none;
+	stroke: #000;
+	shape-rendering: crispEdges;
+}
+
+/* Tooltip */
+.tooltip {
+  position: absolute;
+  background-color: #f9f9f9;
+  padding: 6px;
+  border: 1px solid #ccc;
+  border-radius: 5px;
+  pointer-events: none;
+}
+
+</style>
+</head>
+<body>
+<h1>Public Health Surveillance: HIV Subtypes</h1>
+<!-- Dropdown menu -->
+<select id="subtypeDropdown">
+</select>
+
+<!-- Tooltip -->
+<div class="tooltip" style="opacity:0;"></div>
+
+<script type="text/javascript">
+		
+//Width and height of map
+var width = 960;
+var height = 500;
+
+var lowColor = '#f9f9f9'
+var highColor = '#bc2a66'
+
+var minVal = 0
+var maxVal = 1
+
+// D3 Projection
+var projection = d3.geoAlbersUsa()
+  .translate([width / 2, height / 2]) // translate to center of screen
+  .scale([1000]); // scale things down so see entire US
+
+// Define path generator
+var path = d3.geoPath() // path generator that will convert GeoJSON to SVG paths
+  .projection(projection); // tell path generator to use albersUsa projection
+
+//Create SVG element and append map to the SVG
+var svg = d3.select("body")
+  .append("svg")
+  .attr("width", width)
+  .attr("height", height)
+
+// Add background color to the map
+svg.append("rect")
+  .attr("width", width)
+  .attr("height", height)
+  .attr("fill", "black"); // Change color as needed
+
+d3.csv("subtype_calls.csv", function(data) {
+  var filteredData = data;
+
+  d3.csv("uscities.csv", function(cities_data) {
+    // Create a dictionary to map city names to state names
+    var cityToStateMap = {};
+    cities_data.forEach(function(city) {
+      cityToStateMap[city.city] = city.state_name;
+    });
+
+    var uniqueStates = [...new Set(cities_data.map(d => d.state_name))];
+
+    // console.log(cityToStateMap);
+
+    // Iterate over filteredData and remove rows where city name does not have a corresponding state
+    for (var i = filteredData.length - 1; i >= 0; i--) {
+      var city = ""
+      if (filteredData[i].PrimaryCity !== "N") {
+        city = filteredData[i].PrimaryCity.replace(/_/g, ' '); // Replace underscores with spaces
+      } else if (filteredData[i].SecondaryCity !== "N") {
+        city = filteredData[i].SecondaryCity.replace(/_/g, ' ')
+      } else {
+        filteredData[i].GeoLocation = uniqueStates[Math.floor(Math.random() * uniqueStates.length)];
+        continue;
+      }
+      
+      if (Object.values(cityToStateMap).includes(city)) {
+        // If GeoLocation itself is a state name, no modification needed
+        filteredData[i].GeoLocation = city.replace(/_/g, ' ');
+        continue;
+      } else if (!cityToStateMap.hasOwnProperty(city)) {
+        // Handle cases where city name does not have a corresponding state
+        // console.log("Removing row as no corresponding state found for city:", city);
+        filteredData.splice(i, 1); // Remove the row from filteredData
+      } else {
+        // Convert GeoLocation city name to corresponding state name
+        filteredData[i].GeoLocation = cityToStateMap[city];
+      }
+    }
+
+    console.log(filteredData);
+
+    // Extract unique values from the "PredictedSubtype" column in filteredData
+  var uniqueSubtypes = [];
+  filteredData.forEach(function(row) {
+    var subtype = row.PredictedSubtype;
+    if (!uniqueSubtypes.includes(subtype)) {
+      uniqueSubtypes.push(subtype);
+    }
+  });
+
+  // Populate dropdown with subtypes
+  d3.select("#subtypeDropdown")
+    .selectAll("option")
+    .data(uniqueSubtypes)
+    .enter()
+    .append("option")
+    .text(function(d) { return d; });
+
+  // Load GeoJSON data
+  d3.json("us-states.json", function(json) {
+
+    // Function to update map based on selected subtype
+    function updateMap(selectedSubtype) {
+      // Remove existing map
+      svg.selectAll("path").remove();
+
+      console.log(selectedSubtype);
+      var stateCountMap = {}; // Initialize an empty map to store state counts
+      for (var d = 0; d < filteredData.length; d++) {
+        // Filter data by selected subtype
+        if (filteredData[d].PredictedSubtype === selectedSubtype) {
+          var state = filteredData[d].GeoLocation;
+          // Increment count for the state or initialize it to 1 if not present
+          stateCountMap[state] = (stateCountMap[state] || 0) + 1;
+        }
+      }
+      console.log(stateCountMap);
+
+      minVal = d3.min(Object.values(stateCountMap));
+      maxVal = d3.max(Object.values(stateCountMap));
+      console.log(minVal, maxVal);
+      var ramp = d3.scaleLinear().domain([minVal,maxVal]).range([lowColor,highColor]);
+
+      for (i = 0; i < json.features.length; i++) {
+        json.features[i].properties.value = null;
+      }
+      for (var state in stateCountMap) {
+        for (i = 0; i < json.features.length; i++) {
+          var jsonState = json.features[i].properties.name;
+          if (state === jsonState) {
+            console.log(jsonState);
+            json.features[i].properties.value = stateCountMap[state];
+          }
+        }
+      }
+
+      // Remove existing map
+      svg.selectAll("path").remove();
+
+      // Bind the data to the SVG and create one path per GeoJSON feature
+      svg.selectAll("path")
+        .data(json.features)
+        .enter()
+        .append("path")
+        .attr("d", path)
+        .style("stroke", "#fff")
+        .style("stroke-width", "1")
+        .style("fill", function(d) { 
+          if (d.properties.value === null) {
+            return "black";
+          }
+          return ramp(d.properties.value); 
+        })
+        // Tooltip
+        .on("mouseover", function(d) {
+            tooltip.transition()
+              .duration(200)
+              .style("opacity", .9);
+            tooltip.html(d.properties.name + "<br/>" + "Number of Subtypes: " + d.properties.value)
+              .style("left", (d3.event.pageX) + "px")
+              .style("top", (d3.event.pageY - 28) + "px");
+          })
+        .on("mouseout", function(d) {
+            tooltip.transition()
+              .duration(500)
+              .style("opacity", 0);
+        });
+
+      // Update legend
+      var yAxis = d3.axisRight().scale(y.range([h, 0]).domain([minVal, maxVal])).tickSize(2);
+      key.select(".y.axis").transition().duration(500).call(yAxis);
+    }
+
+    // Initial map update with default subtype
+    updateMap(document.getElementById("subtypeDropdown").value);
+
+    // Dropdown change event listener
+    d3.select("#subtypeDropdown").on("change", function() {
+      var selectedSubtype = d3.select(this).property("value");
+      updateMap(selectedSubtype);
+    });
+  });
+  });
+});
+
+// Tooltip
+var tooltip = d3.select("body").append("div")
+  .attr("class", "tooltip")
+  .style("opacity", 0);
+
+// Add legend
+var w = 140, h = 300;
+
+var key = d3.select("body")
+  .append("svg")
+  .attr("width", w)
+  .attr("height", h)
+  .attr("class", "legend");
+
+var legend = key.append("defs")
+  .append("svg:linearGradient")
+  .attr("id", "gradient")
+  .attr("x1", "100%")
+  .attr("y1", "0%")
+  .attr("x2", "100%")
+  .attr("y2", "100%")
+  .attr("spreadMethod", "pad");
+
+legend.append("stop")
+  .attr("offset", "0%")
+  .attr("stop-color", highColor)
+  .attr("stop-opacity", 1);
+
+legend.append("stop")
+  .attr("offset", "100%")
+  .attr("stop-color", lowColor)
+  .attr("stop-opacity", 1);
+
+key.append("rect")
+  .attr("width", w - 100)
+  .attr("height", h)
+  .style("fill", "url(#gradient)")
+  .attr("transform", "translate(0,10)");
+
+console.log(minVal, maxVal);
+var y = d3.scaleLinear()
+  .range([h, 0])
+  .domain([minVal, maxVal]);
+
+var yAxis = d3.axisRight(y);
+
+key.append("g")
+  .attr("class", "y axis")
+  .attr("transform", "translate(41,10)")
+  .call(yAxis);
+
+// Create bar chart
+var barMargin = {top: 20, right: 30, bottom: 60, left: 40},
+    barWidth = 960 - barMargin.left - barMargin.right,
+    barHeight = 600 - barMargin.top - barMargin.bottom;
+
+var barSvg = d3.select("body").append("svg")
+    .attr("width", barWidth + barMargin.left + barMargin.right)
+    .attr("height", barHeight + barMargin.top + barMargin.bottom)
+  .append("g")
+    .attr("transform", "translate(" + barMargin.left + "," + barMargin.top + ")");
+
+// Load subtype data for bar chart
+d3.csv("subtype_calls.csv", function(data) {
+  var subtypeCounts = {};
+  data.forEach(function(d) {
+    if (!subtypeCounts[d.PredictedSubtype]) {
+      subtypeCounts[d.PredictedSubtype] = 0;
+    }
+    subtypeCounts[d.PredictedSubtype]++;
+  });
+
+  var barData = Object.keys(subtypeCounts).map(function(subtype) {
+    return { subtype: subtype, count: subtypeCounts[subtype] };
+  });
+
+  var x = d3.scaleBand()
+      .range([0, barWidth])
+      .padding(0.1)
+      .domain(barData.map(function(d) { return d.subtype; }));
+
+  var y = d3.scaleLog()
+      .range([barHeight, 0])
+      .domain([1, d3.max(barData, function(d) { return d.count; })]).nice();
+
+      barSvg.append("g")
+      .attr("class", "x axis")
+      .attr("transform", "translate(0," + barHeight + ")")
+      .call(d3.axisBottom(x))
+    .selectAll("text")
+      .attr("transform", "rotate(-45)")
+      .style("text-anchor", "end")
+      .attr("dx", "-0.8em")
+      .attr("dy", "0.15em");
+
+  barSvg.append("g")
+      .attr("class", "y axis")
+      .call(d3.axisLeft(y).ticks(3, ".1s"));
+
+  barSvg.append("text")
+      .attr("transform", "rotate(-90)")
+      .attr("y", 0 - barMargin.left)
+      .attr("x",0 - (barHeight / 2))
+      .attr("dy", "1em")
+      .style("text-anchor", "middle")
+      .text("Number of Samples");
+
+  barSvg.append("text")
+      .attr("transform", "translate(" + (barWidth / 2) + " ," + (barHeight + barMargin.top + 20) + ")")
+      .style("text-anchor", "middle")
+      .text("HIV Subtypes");
+
+  barSvg.selectAll(".bar")
+      .data(barData)
+      .enter().append("rect")
+      .attr("class", "bar")
+      .attr("x", function(d) { return x(d.subtype); })
+      .attr("width", x.bandwidth())
+      .attr("y", function(d) { return y(d.count); })
+      .attr("height", function(d) { return barHeight - y(d.count); })
+      .style("fill", "#bc2a66")
+      // Tooltip
+      .on("mouseover", function(d) {
+            tooltip.transition()
+              .duration(200)
+              .style("opacity", .9);
+            tooltip.html(d.subtype + "<br/>" + "Number of Subtypes: " + d.count)
+              .style("left", (d3.event.pageX) + "px")
+              .style("top", (d3.event.pageY - 28) + "px");
+          })
+      .on("mouseout", function(d) {
+            tooltip.transition()
+              .duration(500)
+              .style("opacity", 0);
+      });
+});
+
+</script>
+</body>
+</html>
